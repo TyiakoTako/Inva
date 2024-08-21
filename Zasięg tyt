@@ -1,0 +1,262 @@
+// ==UserScript==
+// @name         Kasztany w zasiegu
+// @namespace    http://tampermonkey.net/
+// @version      2024-06-10
+// @description  Skrypt sprawdzajacy czy kazdy kasztan jest w zasiegu moba
+// @author       Neeyo
+// @match        https://legion.margonem.pl/
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=margonem.pl
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+    let isNpcAlive = false;
+    let membersNicknames = [];
+    let arePartyMembersOnMap = false;
+    let targetNpc = false;
+    const maxDistance = 22;
+    let mark = 0;
+    const markEmote = {
+        0: "😵",//brak grp
+        1: "✅",//grp w zasiegu
+        2: "❌"//grp nie jest w zasiegu
+    };
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function CheckNpcAlive(npc)
+    {
+        let npcs = Engine.npcs.check();
+        for (let key in npcs) {
+            if (npcs[key].d.nick === npc.d.nick) return true
+        }
+        return false;
+    }
+
+    async function keepMonitoringNpc(npc)
+    {
+        while(CheckNpcAlive(npc))
+        {
+            //console.log(npc.d.nick + " is alive");
+            isNpcAlive = true;
+            await sleep(1000);
+        }
+        //console.log(npc.d.nick + " is dead");
+        isNpcAlive = false;
+        targetNpc = false;
+    }
+
+    async function keepMonitoringPartyMembers(npc)
+    {
+        while(isNpcAlive)
+        {
+            comparePartyMembersWithPlayersOnMap();
+            await sleep(1000);
+        }
+    }
+
+    function getCookie(cookieName)
+    {
+        let c_value = ' ' + document.cookie
+        let c_start = c_value.indexOf(' ' + cookieName + '=')
+        if (c_start === -1)
+        {
+            c_value = null
+        }
+        else
+        {
+            c_start = c_value.indexOf('=', c_start) + 1
+            let c_end = c_value.indexOf(';', c_start)
+            if (c_end === -1)
+            {
+                c_end = c_value.length
+            }
+            c_value = unescape(c_value.substring(c_start, c_end))
+        }
+        return c_value
+    }
+
+    function comparePartyMembersWithPlayersOnMap()
+    {
+        if (!Engine.party)
+        {
+            membersNicknames = [];
+            arePartyMembersOnMap = false;
+            setMark(0);
+            return;
+        }
+        let others = Engine.others.check();
+        let members = Engine.party.getMembers();
+        membersNicknames = [];
+        for (let key in members) {
+            membersNicknames.push(members[key].nick);
+        }
+        let othersFromPartyOnMap = [];
+        for (let key in others) {
+            if (membersNicknames.includes(others[key].d.nick))
+            {
+                othersFromPartyOnMap.push(others[key])
+            }
+        }
+        if (othersFromPartyOnMap.length == membersNicknames.length - 1)
+        {
+            arePartyMembersOnMap = true;
+            monitorPlayersPosition(othersFromPartyOnMap);
+        }
+        else
+        {
+            arePartyMembersOnMap = false;
+            setMark(2);
+        }
+    }
+
+    function setMark(markId)
+    {
+        mark = markId;
+    }
+
+    function monitorPlayersPosition(othersFromPartyOnMap)
+    {
+        let playersOnPosition = 0;
+        for (let key in othersFromPartyOnMap)
+        {
+            if (checkDistance(othersFromPartyOnMap[key], targetNpc))
+            {
+                playersOnPosition += 1;
+            }
+        }
+        if (playersOnPosition == othersFromPartyOnMap.length)
+        {
+            setMark(1);
+        }
+        else
+        {
+            setMark(2);
+        }
+    }
+
+    function checkDistance(player, npc)
+    {
+        if(Math.abs(player.d.x - npc.d.x) <= maxDistance && Math.abs(player.d.y - npc.d.y) <= maxDistance) return true;
+        return false;
+        //console.log("PLAYER " + player.d.x + ", " + player.d.y);
+        //console.log("NPC " + npc.d.x + ", " + npc.d.y);
+    }
+
+    async function manager()
+    {
+        while(isNpcAlive)
+        {
+            console.log(mark);
+            await sleep(1000);
+        }
+    }
+
+    const SignNpc = function(npc, emote) {
+        this.rx = npc.rx;
+        this.ry = npc.ry;
+
+        const shadows = [
+            [0.1, 0.1],
+            [-0.1, -0.1]
+        ];
+
+        this.draw = (ctx) => {
+            const [left, top, right] = npc.collider.box,
+                  nickText = emote;
+            let [offsetX, offsetY] = Engine.map.offset;
+            offsetY += 50;
+
+            ctx.save();
+            ctx.textBaseline = 'top';
+
+            ctx.fillStyle = 'white';
+            ctx.font = '30px Arial';
+            ctx.shadowColor = 'black';
+            ctx.shadowBlur = 2;
+
+            const nickTextWidth = ctx.measureText(nickText).width,
+                  posLeft = (left + right) / 2 - offsetX,
+                  posTop = top - offsetY;
+
+            for (let i = 0; i < 5; i++) {
+                shadows.forEach(([shadowX, shadowY]) => {
+                    ctx.shadowOffsetX = shadowX;
+                    ctx.shadowOffsetY = shadowY;
+                    ctx.fillText(nickText, posLeft - nickTextWidth / 2, posTop - 9);
+                });
+            }
+
+            ctx.restore();
+        };
+
+        this.getOrder = () => npc.ry + 3;
+    };
+
+    const getDrawableList = () => {
+        if(isNpcAlive)
+        {
+            let npcs = Object.assign({}, [targetNpc]);
+            return Object.values(npcs).map(npc => new SignNpc(npc, markEmote[mark]));
+        }
+    };
+
+    function start()
+    {
+        if (getCookie('interface') === 'ni')
+        {
+            if (Engine && Engine.npcs && Engine.npcs.check)
+            {
+                API.addCallbackToEvent('call_draw_add_to_renderer', () => Engine.renderer.add.apply(Engine.renderer, getDrawableList()));
+                API.addCallbackToEvent('newNpc', function (npc)
+                {
+                    if (npc.d.wt > 19)
+                    {
+                        targetNpc = npc;
+                        keepMonitoringNpc(npc);
+                        keepMonitoringPartyMembers();
+                        //keepMonitoringPartyMembers();
+                        manager();
+                    }
+                });
+            }
+            else
+            {
+                setTimeout(start, 50)
+            }
+        }
+    }
+
+    const updatePartyMembers = () => {
+    if (!Engine.party) return;
+    const others = Engine.others.check();
+    const members = Engine.party.getMembers();
+    for (const id of Object.keys(members)) {
+        if (id == Engine.hero.d.id) continue;
+        const $nickname = members[id].$.find('.nickname');
+        const visibleOnMap = others[id];
+        $nickname.css({
+    'color': visibleOnMap ? '' : 'gray',
+    'text-decoration': visibleOnMap ? '' : 'line-through'
+});
+    }
+};
+const intercept = (obj, key, cb, _ = obj[key]) => obj[key] = (...args) => {
+    const result = _.apply(obj, args);
+    return cb(...args) ?? result;
+};
+intercept(Engine.communication, 'parseJSON', (data) => {
+    if (data.party || data.other) {
+        updatePartyMembers();
+    }
+});
+
+    start()
+})();
+
+
+
